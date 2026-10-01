@@ -30,10 +30,6 @@ cd WeAreDevs-deobfuscator
 
 Only Python 3.10+ is required. Optionally, install it as a package:
 
-```bash
-pip install .
-```
-
 ## Usage
 
 ```bash
