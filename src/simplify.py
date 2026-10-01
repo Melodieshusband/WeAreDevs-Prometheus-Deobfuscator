@@ -219,7 +219,7 @@ def _use_is_first_evaluated(stat: Stat, name: str, expr: Expr) -> bool:
     return False
 
 
-def simplify_stats(stats: list[Stat], live_out: set[str]) -> list[Stat]:
+def simplify_stats(stats: list[Stat], live_out: set[str], keep_constants: bool = False) -> list[Stat]:
     work: list[Stat] = []
     for stat in stats:
         work.extend(split_assign(stat))
@@ -237,7 +237,7 @@ def simplify_stats(stats: list[Stat], live_out: set[str]) -> list[Stat]:
             if register == PSEUDO_COND:
                 continue
             expr = stat.exprs[0]
-            if has_function(expr):
+            if has_function(expr) or (keep_constants and _is_simple(expr)):
                 continue
             redefined = None
             conditional = False

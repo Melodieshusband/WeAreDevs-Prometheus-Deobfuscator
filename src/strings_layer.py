@@ -216,11 +216,14 @@ def _find_layer(root: Block) -> _Layer | None:
             table = _match_table(stats[i])
             if table is None:
                 continue
-            resolver = _match_resolver(stats[i + 1], table[0])
-            if resolver is None:
-                continue
-            reversals = _match_reversals(stats[i + 2])
-            if reversals is None:
+            resolver = None
+            reversals = None
+            for j in (i + 1, i + 2):
+                if resolver is None:
+                    resolver = _match_resolver(stats[j], table[0])
+                if reversals is None:
+                    reversals = _match_reversals(stats[j])
+            if resolver is None or reversals is None:
                 continue
             decoder = _match_decoder(stats[i + 3])
             if decoder is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 from dataclasses import dataclass
 
 from .ast_nodes import (
@@ -9,7 +10,7 @@ from .ast_nodes import (
     Repeat, Return, Stat, String, Table, TrueLit, While,
 )
 from .peephole import _declared, _kills, _reads, _ue, peephole
-from .simplify import defs_of, simplify_stats
+from .simplify import _is_simple, defs_of, simplify_stats
 from .strings_layer import _children, _walk
 
 _PURE_PREFIXES = ("math.", "string.", "bit32.", "utf8.")
@@ -107,6 +108,19 @@ def collect_scope(stats: list, params: list[str]):
     return locals_, aliases
 
 
+_CELL = re.compile(r"cell\d+|__brk\d+|_ret")
+
+
+def _is_vm_cell(name: str) -> bool:
+    return _CELL.fullmatch(name) is not None
+
+
+def _target_names(stat) -> list[str]:
+    if isinstance(stat, LocalAssign):
+        return list(stat.names)
+    return [t.name if isinstance(t, Name) else "" for t in stat.targets]
+
+
 class _Dce:
     def __init__(self, locals_: set[str], aliases: dict[str, str]) -> None:
         self.locals = locals_
@@ -171,6 +185,9 @@ class _Dce:
         return name is not None and name in self.locals and name not in live
 
     def removable(self, stat: Stat, live: set[str], in_loop: bool = False) -> bool:
+        if isinstance(stat, (Assign, LocalAssign)) and stat.exprs and all(_is_simple(e) for e in stat.exprs):
+            if not all(_is_vm_cell(n) for n in _target_names(stat)):
+                return False
         if isinstance(stat, Assign):
             for target in stat.targets:
                 if isinstance(target, Name):
@@ -348,14 +365,19 @@ def simplify_tree(stats: list[Stat], live_out: set[str]) -> list[Stat]:
         live_after[i] = set(live)
         live = _ue(stats[i]) if isinstance(stats[i], Return) else (live - _kills(stats[i])) | _ue(stats[i])
     rebuilt = [_simplify_stat(stat, live_after[i]) for i, stat in enumerate(stats)]
-    return simplify_stats(rebuilt, live_out)
+    return simplify_stats(rebuilt, live_out, True)
+
+
+def _free_names(fn: FunctionExpr) -> set[str]:
+    locals_, _ = collect_scope(fn.body.stats, fn.params)
+    return {item.name for item in _walk(fn.body.stats) if isinstance(item, Name)} - locals_
 
 
 def _simplify_expr(node):
     if isinstance(node, list):
         return [_simplify_expr(item) for item in node]
     if isinstance(node, FunctionExpr):
-        return FunctionExpr(node.params, node.is_vararg, Block(simplify_tree(node.body.stats, set())))
+        return FunctionExpr(node.params, node.is_vararg, Block(simplify_tree(node.body.stats, _free_names(node))))
     if not dataclasses.is_dataclass(node) or isinstance(node, type):
         return node
     return type(node)(**{f.name: _simplify_expr(getattr(node, f.name)) for f in dataclasses.fields(node)})
@@ -449,7 +471,22 @@ def _run_passes(current: list[Stat]) -> list[Stat]:
     return current
 
 
+def _restore_declarations(result: list[Stat], original: list[Stat]) -> list[Stat]:
+    known = {name for stat in original if isinstance(stat, LocalAssign) for name in stat.names}
+    declared, _ = collect_scope(result, [])
+    used = {node.name for node in _scope_nodes(result) if isinstance(node, Name)}
+    missing = sorted((used & known) - declared)
+    if not missing:
+        return result
+    return [LocalAssign(missing, [])] + result
+
+
 def clean_program(stats: list[Stat]) -> tuple[list[Stat], bool]:
+    result, found = _clean_program(stats)
+    return _restore_declarations(result, stats), found
+
+
+def _clean_program(stats: list[Stat]) -> tuple[list[Stat], bool]:
     parts = _find_tamper(stats)
     if parts is None:
         return _strip_tail(_run_passes(stats)), False
