@@ -24,7 +24,7 @@ Static deobfuscator for Lua / Luau scripts protected by WeAreDevs and Prometheus
 ## Installation
 
 ```bash
-git clone https://github.com/<username>/WeAreDevs-deobfuscator.git
+git clone https://github.com/Melodieshusband/WeAreDevs-deobfuscator.git
 cd WeAreDevs-deobfuscator
 ```
 
