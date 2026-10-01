@@ -28,7 +28,7 @@ git clone https://github.com/Melodieshusband/WeAreDevs-deobfuscator.git
 cd WeAreDevs-deobfuscator
 ```
 
-Only Python 3.10+ is required. Optionally, install it as a package:
+Only Python 3.10+ is required.
 
 ## Usage
 
