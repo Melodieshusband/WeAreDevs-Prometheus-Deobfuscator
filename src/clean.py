@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from .ast_nodes import (
     Assign, Block, Break, Call, CallStat, Continue, Do, Expr, Field, FunctionExpr,
     GenericFor, If, IfClause, Index, LocalAssign, MethodCall, Name, NumericFor,
-    Repeat, Return, Stat, String, Table, TrueLit, While,
+    Repeat, Return, Stat, String, Table, TableField, TrueLit, While,
 )
 from .peephole import _declared, _kills, _reads, _ue, peephole
 from .simplify import _is_simple, defs_of, simplify_stats
@@ -121,6 +121,51 @@ def _target_names(stat) -> list[str]:
     return [t.name if isinstance(t, Name) else "" for t in stat.targets]
 
 
+_FRESH = "\0fresh:"
+
+
+def _bare_name(expr) -> str | None:
+    expr = _strip(expr)
+    return expr.name if isinstance(expr, Name) else None
+
+
+def _resolved_path(func, aliases: dict[str, str]) -> str | None:
+    path = path_of(func)
+    if path is None:
+        return None
+    head = path.split(".")[0]
+    if head in aliases:
+        return aliases[head] + path[len(head):]
+    return path
+
+
+def _escaped_names(node, aliases: dict[str, str]) -> set[str]:
+    found: set[str] = set()
+
+    def add(expr) -> None:
+        name = _bare_name(expr)
+        if name is not None:
+            found.add(name)
+
+    for item in _walk(node):
+        if isinstance(item, FunctionExpr):
+            found.update(n.name for n in _walk(item) if isinstance(n, Name))
+        elif isinstance(item, (Assign, LocalAssign, Return)):
+            for expr in item.exprs:
+                add(expr)
+        elif isinstance(item, TableField):
+            add(item.value)
+        elif isinstance(item, Call):
+            if _classify(_resolved_path(item.func, aliases)) == "impure":
+                for arg in item.args:
+                    add(arg)
+        elif isinstance(item, MethodCall):
+            add(item.obj)
+            for arg in item.args:
+                add(arg)
+    return found
+
+
 class _Dce:
     def __init__(self, locals_: set[str], aliases: dict[str, str]) -> None:
         self.locals = locals_
@@ -184,7 +229,24 @@ class _Dce:
     def dead_local(self, name: str | None, live: set[str]) -> bool:
         return name is not None and name in self.locals and name not in live
 
+    def inner_flow(self, stat: Stat) -> dict[str, str]:
+        taint = defs_of(stat) | _escaped_names(stat, self.aliases)
+        return {
+            k: v for k, v in self.flow.items()
+            if not (k.startswith(_FRESH) and k[len(_FRESH):] in taint)
+        }
+
     def removable(self, stat: Stat, live: set[str], in_loop: bool = False) -> bool:
+        if isinstance(stat, (If, Do) + _LOOPS):
+            saved = self.flow
+            self.flow = self.inner_flow(stat)
+            try:
+                return self.check_removable(stat, live, in_loop)
+            finally:
+                self.flow = saved
+        return self.check_removable(stat, live, in_loop)
+
+    def check_removable(self, stat: Stat, live: set[str], in_loop: bool = False) -> bool:
         if isinstance(stat, (Assign, LocalAssign)) and stat.exprs and all(_is_simple(e) for e in stat.exprs):
             if not all(_is_vm_cell(n) for n in _target_names(stat)):
                 return False
@@ -194,7 +256,8 @@ class _Dce:
                     if not self.dead_local(target.name, live):
                         return False
                 else:
-                    if not self.dead_local(base_name(target), live):
+                    base = base_name(target)
+                    if base is None or _FRESH + base not in self.flow or not self.dead_local(base, live):
                         return False
             ok, mutated = self.effects([stat.exprs, [t for t in stat.targets if not isinstance(t, Name)]])
             return ok and all(self.dead_local(m, live) for m in mutated)
@@ -230,6 +293,22 @@ class _Dce:
         return False
 
     def advance(self, env: dict[str, str], stat: Stat) -> dict[str, str]:
+        env = self.advance_paths(env, stat)
+        for name in defs_of(stat) | _escaped_names(stat, self.aliases):
+            env.pop(_FRESH + name, None)
+        if isinstance(stat, (Assign, LocalAssign)):
+            if isinstance(stat, Assign):
+                targets = [t.name if isinstance(t, Name) else None for t in stat.targets]
+            else:
+                targets = list(stat.names)
+            if len(targets) == len(stat.exprs):
+                escaped = _escaped_names(stat, self.aliases)
+                for name, expr in zip(targets, stat.exprs):
+                    if name is not None and name not in escaped and isinstance(_strip(expr), Table):
+                        env[_FRESH + name] = "1"
+        return env
+
+    def advance_paths(self, env: dict[str, str], stat: Stat) -> dict[str, str]:
         env = dict(env)
         if (
             isinstance(stat, Assign) and len(stat.targets) == len(stat.exprs)
@@ -296,7 +375,11 @@ class _Dce:
         if isinstance(stat, _LOOPS):
             inner = live | _ue(stat)
             killed = defs_of(stat)
-            loop_env = {k: v for k, v in env.items() if k not in killed}
+            taint = killed | _escaped_names(stat, self.aliases)
+            loop_env = {
+                k: v for k, v in env.items()
+                if k not in killed and not (k.startswith(_FRESH) and k[len(_FRESH):] in taint)
+            }
             values = {}
             for f in dataclasses.fields(stat):
                 value = getattr(stat, f.name)
