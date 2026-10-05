@@ -185,6 +185,11 @@ def _match_decoder(stat: Stat) -> tuple[dict[str, dict[str, int]], dict[str, str
             table = _alphabet_from(inner.exprs[0])
             if table is not None and len(table) in (64, 85):
                 alphabets["b64" if len(table) == 64 else "b85"] = table
+    if len(alphabets) == 1 and "b64" in alphabets:
+        numbers = {_number(item) for item in _walk(stat.body) if isinstance(item, Number)}
+        if 64 in numbers or 65536 in numbers:
+            return alphabets, {}
+        return None
     if len(alphabets) != 2:
         return None
     tags: dict[str, str] = {}
@@ -300,7 +305,12 @@ def _decode_table(layer: _Layer) -> tuple[list[Expr], int]:
             values[low - 1:high] = reversed(values[low - 1:high])
     decoded = 0
     result: list[Expr] = []
+    untagged = not layer.tags
     for item in values:
+        if untagged and isinstance(item, String) and item.value:
+            result.append(String(_decode_b64(item.value, layer.alphabets["b64"])))
+            decoded += 1
+            continue
         if isinstance(item, String) and item.value:
             kind = layer.tags.get(item.value[0])
             if kind is not None:

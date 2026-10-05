@@ -149,7 +149,13 @@ def decrypt(payload: str, seed: int, params: CipherParams) -> str:
 
 
 def _printable(text: str) -> bool:
-    return all(32 <= ord(c) <= 126 or c in "\n\r\t" for c in text)
+    if any(ord(c) > 255 for c in text):
+        return False
+    try:
+        decoded = bytes(ord(c) for c in text).decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return all(c.isprintable() or c in "\n\r\t" for c in decoded)
 
 
 def _looks_like_decryptor(func) -> bool:
