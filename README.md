@@ -35,7 +35,7 @@ Only Python 3.10+ is required.
 ```bash
 python deobfuscate.py script.lua
 python deobfuscate.py a.lua b.lua -o result
-python -m wearedevs_deobfuscator script.lua --no-blocks
+python -m src script.lua --no-blocks
 ```
 
 | Flag | Description |
